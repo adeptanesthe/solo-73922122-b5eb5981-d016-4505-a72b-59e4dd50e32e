@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>单季营收披露时点核算</title>
+<style>
+  :root { --bd:#d0d7de; --ok:#1a7f37; --warn:#9a6700; --err:#cf222e; --muted:#57606a; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         margin: 0; background: #f6f8fa; color: #1f2328; }
+  header { background: #24292f; color: #fff; padding: 14px 24px; }
+  header h1 { font-size: 18px; margin: 0; }
+  header p { margin: 4px 0 0; font-size: 12px; color: #adb6bf; }
+  main { max-width: 1080px; margin: 20px auto; padding: 0 16px; display: grid; gap: 16px; }
+  section { background: #fff; border: 1px solid var(--bd); border-radius: 8px; padding: 16px 20px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
+  input, button, select { font: inherit; padding: 6px 10px; border: 1px solid var(--bd);
+         border-radius: 6px; background: #fff; }
+  button { background: #1f6feb; border-color: #1f6feb; color: #fff; cursor: pointer; }
+  button.ghost { background: #fff; color: #1f6feb; }
+  button:hover { filter: brightness(0.95); }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .row > div { min-width: 160px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 12px; }
+  th, td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+  th { background: #f6f8fa; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .msg { margin-top: 10px; padding: 8px 12px; border-radius: 6px; font-size: 13px; display: none; }
+  .msg.ok { display: block; background: #dafbe1; color: var(--ok); }
+  .msg.err { display: block; background: #ffebe9; color: var(--err); }
+  .msg.info { display: block; background: #fff8c5; color: var(--warn); }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
+  .tag.ok { background: #dafbe1; color: var(--ok); }
+  .tag.no_data { background: #eaeef2; color: var(--muted); }
+  .tag.not_computable { background: #fff8c5; color: var(--warn); }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
+  code { background: #eff1f3; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .src { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>单季营收披露时点核算</h1>
+  <p>按披露截止时刻核算四季单季营收：每季取不晚于截止时刻最近披露的累计数；Q1 直接取累计，其余季度减上季可见累计；缺前季不可算；重述只影响其披露之后的时点。</p>
+</header>
+<main>
+  <section>
+    <h2>① 上传累计营收报告 CSV</h2>
+    <div class="row">
+      <div>
+        <label>CSV 文件（UTF-8，每行一个季度）</label>
+        <input type="file" id="file" accept=".csv,text/csv">
+      </div>
+      <div><button id="uploadBtn">上传</button></div>
+    </div>
+    <div class="msg" id="uploadMsg"></div>
+    <div class="hint">
+      表头：<code>company,fiscal_year,disclosed_at,report_no,quarter,cumulative_revenue</code>
+      （支持中文表头：公司,财年,披露时刻,报告号,季度,累计营收）。<br>
+      整份文件须为同一公司 / 财年 / 披露时刻 / 报告号；金额为整数元；披露时刻为 ISO-8601（不带时区按 UTC）。
+      同一报告重传不重复；报告号异内容、或同季同披露时刻异值，整份拒收。
+    </div>
+  </section>
+
+  <section>
+    <h2>② 按披露截止时刻查询四季单季营收</h2>
+    <div class="row">
+      <div>
+        <label>公司</label>
+        <input id="qCompany" list="companyList" placeholder="如：示例科技">
+        <datalist id="companyList"></datalist>
+      </div>
+      <div>
+        <label>财年</label>
+        <input id="qYear" type="number" placeholder="2023" style="width:110px">
+      </div>
+      <div>
+        <label>披露截止时刻（不晚于该时刻，UTC）</label>
+        <input id="qCutoff" type="datetime-local" step="1">
+      </div>
+      <div><button class="ghost" id="nowBtn" type="button">填入当前时刻</button></div>
+      <div><button id="queryBtn">查询</button></div>
+    </div>
+    <div class="msg" id="queryMsg"></div>
+    <div id="queryResult"></div>
+  </section>
+
+  <section>
+    <h2>③ 披露流水（该公司财年的全部可见事实）</h2>
+    <div id="factsResult"><p class="hint">执行查询后展示。</p></div>
+  </section>
+
+  <section>
+    <h2>④ 已接收报告 <button class="ghost" id="refreshBtn" style="font-size:12px">刷新</button></h2>
+    <div id="reportsResult"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmtNum = (n) => n === null || n === undefined ? "—" : Number(n).toLocaleString("zh-CN");
+const STATUS_TEXT = { ok: "可算", no_data: "无披露", not_computable: "不可算（缺前季）" };
+
+function showMsg(el, kind, text) {
+  el.className = "msg " + kind;
+  el.textContent = text;
+}
+
+async function api(url, options) {
+  const resp = await fetch(url, options);
+  let body = null;
+  try { body = await resp.json(); } catch (e) { /* ignore */ }
+  return { status: resp.status, body };
+}
+
+$("uploadBtn").onclick = async () => {
+  const f = $("file").files[0];
+  if (!f) { showMsg($("uploadMsg"), "err", "请先选择 CSV 文件"); return; }
+  const fd = new FormData();
+  fd.append("file", f);
+  $("uploadBtn").disabled = true;
+  try {
+    const { status, body } = await api("/api/reports", { method: "POST", body: fd });
+    if (status === 200 && body.status === "created") {
+      showMsg($("uploadMsg"), "ok",
+        `已接收：报告号 ${body.report_no}，新增事实 ${body.inserted_facts} 条，复用 ${body.reused_facts} 条`);
+    } else if (status === 200 && body.status === "unchanged") {
+      showMsg($("uploadMsg"), "info", `幂等：${body.message}（报告号 ${body.report_no}）`);
+    } else if (status === 409) {
+      showMsg($("uploadMsg"), "err", `冲突拒收：${body.detail.message || body.detail}`);
+    } else {
+      showMsg($("uploadMsg"), "err", `拒绝（${status}）：${body && body.detail ? body.detail : "未知错误"}`);
+    }
+  } catch (e) {
+    showMsg($("uploadMsg"), "err", "网络错误：" + e);
+  } finally {
+    $("uploadBtn").disabled = false;
+  }
+  loadReports(); loadCompanies();
+};
+
+$("nowBtn").onclick = () => {
+  const d = new Date();
+  d.setSeconds(d.getSeconds(), 0);
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  $("qCutoff").value = local.toISOString().slice(0, 19);
+};
+
+$("queryBtn").onclick = async () => {
+  const company = $("qCompany").value.trim();
+  const year = $("qYear").value.trim();
+  const cutoffLocal = $("qCutoff").value;
+  if (!company || !year || !cutoffLocal) {
+    showMsg($("queryMsg"), "err", "请填写公司、财年与截止时刻"); return;
+  }
+  const cutoff = new Date(cutoffLocal).toISOString();
+  const url = `/api/single-quarter?company=${encodeURIComponent(company)}&fiscal_year=${encodeURIComponent(year)}&cutoff=${encodeURIComponent(cutoff)}`;
+  const { status, body } = await api(url);
+  if (status !== 200) {
+    showMsg($("queryMsg"), "err", `查询失败（${status}）：${body && body.detail ? body.detail : "未知错误"}`);
+    return;
+  }
+  showMsg($("queryMsg"), "ok",
+    `截止 ${body.cutoff}（UTC）可见的四季单季营收如下，本页数据来自同一已提交快照。`);
+  renderQuarters(body);
+  loadFacts(company, year);
+};
+
+function srcCell(s) {
+  if (!s) return "<span class='src'>—</span>";
+  return `${fmtNum(s.cumulative_revenue)}<br><span class='src'>${s.report_no} @ ${s.disclosed_at}</span>`;
+}
+
+function renderQuarters(data) {
+  let html = `<table><thead><tr>
+    <th>季度</th><th>状态</th><th>单季营收（元）</th>
+    <th>本季累计（元）/ 来源</th><th>上季累计（元）/ 来源</th></tr></thead><tbody>`;
+  for (const q of data.quarters) {
+    html += `<tr>
+      <td>Q${q.quarter}</td>
+      <td><span class="tag ${q.status}">${STATUS_TEXT[q.status]}</span></td>
+      <td class="num">${fmtNum(q.single_quarter_revenue)}</td>
+      <td class="num">${srcCell(q.cumulative_source)}</td>
+      <td class="num">${q.quarter === 1 ? "<span class='src'>—（首季）</span>" : srcCell(q.prev_cumulative_source)}</td>
+    </tr>`;
+  }
+  $("queryResult").innerHTML = html + "</tbody></table>";
+}
+
+async function loadFacts(company, year) {
+  const { body } = await api(`/api/facts?company=${encodeURIComponent(company)}&fiscal_year=${encodeURIComponent(year)}`);
+  if (!body || !body.facts.length) {
+    $("factsResult").innerHTML = "<p class='hint'>无披露事实。</p>"; return;
+  }
+  let html = `<table><thead><tr><th>披露时刻(UTC)</th><th>季度</th><th>累计营收（元）</th><th>来源报告号</th></tr></thead><tbody>`;
+  for (const f of body.facts) {
+    html += `<tr><td>${f.disclosed_at}</td><td>Q${f.quarter}</td>
+      <td class="num">${fmtNum(f.cumulative_revenue)}</td><td>${f.report_no}</td></tr>`;
+  }
+  $("factsResult").innerHTML = html + "</tbody></table>";
+}
+
+async function loadReports() {
+  const { body } = await api("/api/reports");
+  if (!body || !body.reports.length) {
+    $("reportsResult").innerHTML = "<p class='hint'>尚未接收任何报告。</p>"; return;
+  }
+  let html = `<table><thead><tr><th>公司</th><th>财年</th><th>报告号</th>
+    <th>披露时刻(UTC)</th><th>行数</th><th>入库事实数</th></tr></thead><tbody>`;
+  for (const r of body.reports) {
+    html += `<tr><td>${r.company}</td><td>${r.fiscal_year}</td><td>${r.report_no}</td>
+      <td>${r.disclosed_at}</td><td class="num">${r.row_count}</td><td class="num">${r.fact_count}</td></tr>`;
+  }
+  $("reportsResult").innerHTML = html + "</tbody></table>";
+}
+
+async function loadCompanies() {
+  const { body } = await api("/api/companies");
+  if (!body) return;
+  $("companyList").innerHTML = body.companies.map(c => `<option value="${c.company}">`).join("");
+}
+
+loadReports(); loadCompanies();
+</script>
+</body>
+</html>
